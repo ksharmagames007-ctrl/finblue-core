@@ -12,15 +12,14 @@ st.set_page_config(page_title="FinBlue Sovereign AI", layout="wide", page_icon="
 st.sidebar.title("FinBlue Command")
 mode = st.sidebar.radio("Select Mode", [
     "Live Dashboard", 
-    "Backtest Engine (Risk Managed)",
-    "AI Prophet (Smart Entry)"
+    "Market Scanner (Command Center)",
+    "AI Sniper (Deep Analysis)"
 ])
-ticker = st.sidebar.text_input("Enter Ticker (e.g., TRENT.NS, ADANIENT.NS)", "TRENT.NS")
 
-# --- FUNCTION: FETCH DATA ---
-def get_data(ticker):
+# --- FUNCTION: FETCH & ANALYZE ---
+def analyze_stock(ticker):
     try:
-        data = yf.download(ticker, period="5y", interval="1d", progress=False)
+        data = yf.download(ticker, period="2y", interval="1d", progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
@@ -29,7 +28,7 @@ def get_data(ticker):
         data['SMA_50'] = data['Close'].rolling(window=50).mean()
         data['SMA_200'] = data['Close'].rolling(window=200).mean()
         
-        # RSI CALCULATION (The "Cheap vs Expensive" meter)
+        # RSI
         delta = data['Close'].diff()
         gain = (delta.where(delta > 0, 0)).fillna(0)
         loss = (-delta.where(delta < 0, 0)).fillna(0)
@@ -38,120 +37,94 @@ def get_data(ticker):
         rs = avg_gain / avg_loss
         data['RSI'] = 100 - (100 / (1 + rs))
         
-        return data
+        # AI PREDICTION
+        data = data.dropna().reset_index()
+        data['Date_Ordinal'] = data['Date'].map(pd.Timestamp.toordinal)
+        X = data[['Date_Ordinal']]
+        y = data['Close']
+        model = LinearRegression()
+        model.fit(X, y)
+        
+        future_date = data['Date'].iloc[-1] + datetime.timedelta(days=30)
+        pred_price = model.predict([[future_date.toordinal()]])[0]
+        curr_price = data['Close'].iloc[-1]
+        ai_upside = ((pred_price - curr_price) / curr_price) * 100
+        
+        return {
+            "Ticker": ticker,
+            "Price": round(curr_price, 2),
+            "RSI": round(data['RSI'].iloc[-1], 1),
+            "Trend": "UP 🚀" if data['SMA_50'].iloc[-1] > data['SMA_200'].iloc[-1] else "DOWN 🔻",
+            "AI_Upside": round(ai_upside, 1)
+        }
     except:
         return None
 
 # --- MODE 1: LIVE DASHBOARD ---
 if mode == "Live Dashboard":
-    st.title(f"🔵 FinBlue Live: {ticker}")
-    data = get_data(ticker)
-    
-    if data is None or data.empty:
-        st.error("⚠️ Ticker not found.")
-    else:
-        latest = data.iloc[-1]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Current Price", f"₹{round(latest['Close'], 2)}")
-        
-        rsi = latest['RSI']
-        col2.metric("RSI (Price Heat)", f"{round(rsi, 1)}")
-        
-        trend = "UP 🚀" if latest['SMA_50'] > latest['SMA_200'] else "DOWN 🔻"
-        col3.metric("Trend", trend)
-        st.line_chart(data['Close'])
+    st.title("FinBlue Live Dashboard")
+    st.write("Select a specific tool from the sidebar to begin.")
 
-# --- MODE 2: BACKTEST ENGINE (WITH STOP LOSS) ---
-elif mode == "Backtest Engine (Risk Managed)":
-    st.title("⏳ FinBlue Time Machine")
-    col_a, col_b = st.columns(2)
-    initial_capital = col_a.number_input("Initial Capital (₹)", value=100000)
-    stop_loss_pct = col_b.slider("Stop Loss (%) - Sell if drops by:", 1, 20, 10)
+# --- MODE 2: MARKET SCANNER (NEW) ---
+elif mode == "Market Scanner (Command Center)":
+    st.title("📡 FinBlue Watchtower")
+    st.write("Scanning the Sovereign Watchlist...")
     
-    if st.button("Run Simulation"):
-        data = get_data(ticker)
-        if data is not None:
-            data = data.dropna()
-            balance = initial_capital
-            shares = 0
-            position = 0
-            peak_price = 0
-            portfolio_values = []
+    # THE WATCHLIST (You can add more here)
+    watchlist = ["RELIANCE.NS", "TRENT.NS", "ZOMATO.NS", "ADANIENT.NS", "HDFCBANK.NS", "TATAMOTORS.NS"]
+    
+    if st.button("Scan Market Now"):
+        results = []
+        progress = st.progress(0)
+        
+        for i, ticker in enumerate(watchlist):
+            with st.spinner(f"Analyzing {ticker}..."):
+                stats = analyze_stock(ticker)
+                if stats:
+                    # LOGIC: VERDICT
+                    if stats['AI_Upside'] > 5 and stats['RSI'] < 45:
+                        stats['Verdict'] = "BUY NOW 🟢"
+                    elif stats['AI_Upside'] > 5 and stats['RSI'] > 70:
+                        stats['Verdict'] = "WAIT (High) 🟡"
+                    elif stats['AI_Upside'] < 0:
+                        stats['Verdict'] = "AVOID 🔴"
+                    else:
+                        stats['Verdict'] = "HOLD 🔵"
+                    results.append(stats)
+            progress.progress((i + 1) / len(watchlist))
             
-            for index, row in data.iterrows():
-                price = row['Close']
-                # STOP LOSS LOGIC
-                if position == 1:
-                    if price > peak_price: peak_price = price
-                    drop = (peak_price - price) / peak_price
-                    if drop > (stop_loss_pct/100):
-                        balance = shares * price
-                        shares = 0
-                        position = 0
-                
-                # BUY LOGIC (Golden Cross)
-                if position == 0 and row['SMA_50'] > row['SMA_200']:
-                    shares = balance / price
-                    balance = 0
-                    position = 1
-                    peak_price = price
-                
-                # SELL LOGIC (Death Cross)
-                elif position == 1 and row['SMA_50'] < row['SMA_200']:
-                    balance = shares * price
-                    shares = 0
-                    position = 0
-                
-                val = shares * price if position == 1 else balance
-                portfolio_values.append(val)
-            
-            profit = portfolio_values[-1] - initial_capital
-            st.metric("Final Value", f"₹{int(portfolio_values[-1]):,}", delta=f"{int(profit)}")
-            st.line_chart(portfolio_values)
+        # DISPLAY AS A DATAFRAME
+        df = pd.DataFrame(results)
+        st.dataframe(df, use_container_width=True)
+        
+        # HIGHLIGHT THE WINNER
+        best_pick = df[df['Verdict'] == "BUY NOW 🟢"]
+        if not best_pick.empty:
+            st.success(f"💎 **Top Pick:** {best_pick.iloc[0]['Ticker']} is in the BUY ZONE!")
+        else:
+            st.info("No perfect entries found right now. Patience pays.")
 
-# --- MODE 3: AI SNIPER (THE NEW LOGIC) ---
-elif mode == "AI Prophet (Smart Entry)":
+# --- MODE 3: AI SNIPER ---
+elif mode == "AI Sniper (Deep Analysis)":
+    ticker = st.sidebar.text_input("Enter Ticker", "TRENT.NS")
     st.title(f"🎯 AI Sniper: {ticker}")
-    st.write("Combining **Long Term AI Prediction** with **Short Term RSI**.")
     
     if st.button("Analyze Trade"):
-        data = get_data(ticker)
-        if data is not None:
-            data = data.dropna().reset_index()
-            
-            # 1. ASK THE AI (Long Term)
-            data['Date_Ordinal'] = data['Date'].map(pd.Timestamp.toordinal)
-            X = data[['Date_Ordinal']]
-            y = data['Close']
-            model = LinearRegression()
-            model.fit(X, y)
-            
-            future_date = data['Date'].iloc[-1] + datetime.timedelta(days=30)
-            pred_price = model.predict([[future_date.toordinal()]])[0]
-            curr_price = data['Close'].iloc[-1]
-            ai_upside = ((pred_price - curr_price) / curr_price) * 100
-            
-            # 2. CHECK THE RSI (Short Term)
-            rsi = data['RSI'].iloc[-1]
-            
-            # 3. THE VERDICT
-            st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("Current Price", f"₹{round(curr_price, 2)}")
-            c2.metric("AI Prediction (30 Days)", f"₹{round(pred_price, 2)}", delta=f"{round(ai_upside, 1)}%")
-            c3.metric("RSI Level", f"{round(rsi, 1)}")
-            
-            st.subheader("🤖 The Sovereign Verdict:")
-            
-            if ai_upside > 5: # AI says UP
-                if rsi < 40:
-                    st.success("✅ **BUY NOW!** The trend is UP and the price is CHEAP (Dip). Perfect Entry.")
-                elif rsi > 70:
-                    st.warning("✋ **WAIT.** The trend is UP, but the price is too HIGH right now. Wait for it to drop below RSI 60.")
+        with st.spinner("Calculating..."):
+            stats = analyze_stock(ticker)
+            if stats:
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Price", f"₹{stats['Price']}")
+                c2.metric("AI Prediction", f"{stats['AI_Upside']}%")
+                c3.metric("RSI", stats['RSI'])
+                
+                st.divider()
+                if stats['AI_Upside'] > 5:
+                    if stats['RSI'] < 45:
+                        st.success("✅ BUY NOW! (Trend Up + Price Cheap)")
+                    elif stats['RSI'] > 70:
+                        st.warning("✋ WAIT. (Trend Up but Price too High)")
+                    else:
+                        st.info("🔹 ACCUMULATE. (Fair Price)")
                 else:
-                    st.info("🔹 **HOLD/ACCUMULATE.** The price is fair. You can buy small amounts.")
-            else:
-                st.error("❌ **DO NOT BUY.** The AI predicts the trend is Down or Flat.")
-            
-            # Visuals
-            st.line_chart(data['Close'])
+                    st.error("❌ AVOID. (Trend is Flat/Down)")
