@@ -1,30 +1,34 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import numpy as np
+from sklearn.linear_model import LinearRegression
+import datetime
 
 # --- PAGE CONFIG ---
-st.set_page_config(page_title="FinBlue Sovereign", layout="wide", page_icon="ew")
+st.set_page_config(page_title="FinBlue Sovereign AI", layout="wide", page_icon="ew")
 
 # --- SIDEBAR ---
 st.sidebar.title("FinBlue Command")
-mode = st.sidebar.radio("Select Mode", ["Live Dashboard", "Backtest Engine (Time Machine)"])
-# DEFAULT TO A WINNER
+mode = st.sidebar.radio("Select Mode", [
+    "Live Dashboard", 
+    "Backtest Engine (Time Machine)",
+    "AI Prophet (Future Prediction)"
+])
 ticker = st.sidebar.text_input("Enter Ticker (e.g., TRENT.NS, ZOMATO.NS)", "TRENT.NS")
 
 # --- FUNCTION: FETCH DATA ---
 def get_data(ticker):
     try:
-        # Download 5 years to ensure we have enough data for 200 SMA
+        # Download 5 years for better AI training
         data = yf.download(ticker, period="5y", interval="1d", progress=False)
-        
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
-            
-        # --- THE GOLDEN CROSS CALCULATION ---
+        
+        # Technical Indicators
         data['SMA_50'] = data['Close'].rolling(window=50).mean()
         data['SMA_200'] = data['Close'].rolling(window=200).mean()
-        data['RSI'] = 50 # Placeholder so dashboard doesn't break
         
         return data
     except:
@@ -33,93 +37,127 @@ def get_data(ticker):
 # --- MODE 1: LIVE DASHBOARD ---
 if mode == "Live Dashboard":
     st.title(f"🔵 FinBlue Live: {ticker}")
+    st.caption("⚠️ DATA DELAYED: Do not use for high-frequency trading.")
+    
     data = get_data(ticker)
     
     if data is None or data.empty:
-        st.error("⚠️ Ticker not found.")
+        st.error("⚠️ Ticker not found. Check spelling.")
     else:
         latest = data.iloc[-1]
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Price", f"₹{round(latest['Close'], 2)}")
+        col1, col2 = st.columns(2)
+        col1.metric("Current Price", f"₹{round(latest['Close'], 2)}")
         
-        # TREND SIGNAL
-        trend = "BULLISH (UP)" if latest['SMA_50'] > latest['SMA_200'] else "BEARISH (DOWN)"
+        trend = "BULLISH 🚀" if latest['SMA_50'] > latest['SMA_200'] else "BEARISH 🔻"
         col2.metric("Market Trend", trend)
-        col3.metric("50-Day Avg", f"₹{round(latest['SMA_50'], 2)}")
+        
         st.line_chart(data['Close'])
 
-# --- MODE 2: BACKTEST ENGINE (GOLDEN CROSS) ---
+# --- MODE 2: BACKTEST ENGINE ---
 elif mode == "Backtest Engine (Time Machine)":
-    st.title("⏳ FinBlue Time Machine (Golden Cross)")
-    st.write(f"Testing **Trend Following** Strategy on **{ticker}**...")
-    
+    st.title("⏳ FinBlue Time Machine")
     initial_capital = st.number_input("Initial Capital (₹)", value=100000)
     
     if st.button("Run Simulation"):
         data = get_data(ticker)
-        
-        if data is None or data.empty:
-            st.error("No data found.")
-        else:
-            # Drop NaN values created by SMAs
+        if data is not None:
             data = data.dropna()
             
-            position = 0
+            # Logic: Golden Cross
+            data['Signal'] = 0
+            data.loc[data['SMA_50'] > data['SMA_200'], 'Signal'] = 1
+            data['Position'] = data['Signal'].diff()
+            
+            # Simple Backtest Loop
             balance = initial_capital
             shares = 0
             portfolio_values = []
             
             for index, row in data.iterrows():
-                price = row['Close']
-                sma_50 = row['SMA_50']
-                sma_200 = row['SMA_200']
-                
-                # BUY: When 50 crosses ABOVE 200 (Golden Cross)
-                if sma_50 > sma_200 and position == 0:
-                    shares = balance / price
+                if row['Position'] == 1: # Buy
+                    shares = balance / row['Close']
                     balance = 0
-                    position = 1
-                
-                # SELL: When 50 crosses BELOW 200 (Death Cross)
-                elif sma_50 < sma_200 and position == 1:
-                    balance = shares * price
+                elif row['Position'] == -1 and shares > 0: # Sell
+                    balance = shares * row['Close']
                     shares = 0
-                    position = 0
                 
-                # TRACK VALUE
-                if position == 1:
-                    curr_val = shares * price
-                else:
-                    curr_val = balance
+                curr_val = (shares * row['Close']) if shares > 0 else balance
                 portfolio_values.append(curr_val)
             
-            # --- RESULTS & FEES CALCULATION ---
-            final_value = portfolio_values[-1]
-            total_profit = final_value - initial_capital
-            roi = (total_profit / initial_capital) * 100
+            # Results
+            final_val = portfolio_values[-1]
+            profit = final_val - initial_capital
+            roi = (profit/initial_capital)*100
             
-            # THE SOVEREIGN FEE MODEL
-            mgmt_fee = initial_capital * 0.02  # 2% Flat Fee
-            perf_fee = 0
-            if total_profit > 0:
-                perf_fee = total_profit * 0.20 # 20% of Profit
-            
+            # Fees
+            mgmt_fee = initial_capital * 0.02
+            perf_fee = profit * 0.20 if profit > 0 else 0
             total_fees = mgmt_fee + perf_fee
-            client_take_home = final_value - total_fees
+            client_net = final_val - total_fees
             
-            # --- DISPLAY THE SCOREBOARD ---
             st.divider()
-            st.subheader("🏆 The Scoreboard")
-            
             c1, c2, c3 = st.columns(3)
-            c1.metric("💰 Client Profit", f"₹{int(total_profit):,}", delta=f"{round(roi, 2)}%")
-            c2.metric("🏦 FinBlue Earnings (You)", f"₹{int(total_fees):,}", delta="Your Income")
-            c3.metric("NET Client Value", f"₹{int(client_take_home):,}")
-            
-            if total_profit > 0:
-                st.balloons()
-                st.success(f"🚀 BOOM! You just earned ₹{int(total_fees):,} from this single client.")
+            c1.metric("💰 Client Profit", f"₹{int(profit):,}", delta=f"{round(roi,2)}%")
+            c2.metric("🏦 FinBlue Earnings (You)", f"₹{int(total_fees):,}")
+            c3.metric("NET Client Value", f"₹{int(client_net):,}")
             
             st.line_chart(portfolio_values)
+
+# --- MODE 3: AI PROPHET (NEW) ---
+elif mode == "AI Prophet (Future Prediction)":
+    st.title(f"🔮 AI Prophet: Predicting {ticker}")
+    st.warning("⚠️ EXPERIMENTAL: This uses Linear Regression. It assumes trends continue forever. Real markets change.")
+    
+    if st.button("Generate Prediction"):
+        data = get_data(ticker)
+        if data is not None:
+            data = data.dropna()
+            data = data.reset_index()
             
+            # Prepare Data for AI (Dates to Numbers)
+            data['Date_Ordinal'] = data['Date'].map(pd.Timestamp.toordinal)
             
+            X = data[['Date_Ordinal']] # Input (Time)
+            y = data['Close']          # Output (Price)
+            
+            # Train the Brain
+            model = LinearRegression()
+            model.fit(X, y)
+            
+            # Predict Next 30 Days
+            last_date = data['Date'].iloc[-1]
+            future_dates = [last_date + datetime.timedelta(days=x) for x in range(1, 31)]
+            future_ordinals = [[d.toordinal()] for d in future_dates]
+            
+            future_prices = model.predict(future_ordinals)
+            
+            # Display Prediction
+            predicted_price = future_prices[-1]
+            current_price = data['Close'].iloc[-1]
+            change = ((predicted_price - current_price) / current_price) * 100
+            
+            st.divider()
+            col1, col2 = st.columns(2)
+            col1.metric("Current Price", f"₹{round(current_price, 2)}")
+            
+            if change > 0:
+                col2.metric("Predicted Price (30 Days)", f"₹{round(predicted_price, 2)}", delta=f"+{round(change, 2)}%")
+                st.success("🚀 AI Prediction: BULLISH Trend Detected.")
+            else:
+                col2.metric("Predicted Price (30 Days)", f"₹{round(predicted_price, 2)}", delta=f"{round(change, 2)}%")
+                st.error("📉 AI Prediction: BEARISH Trend Detected.")
+            
+            # Plotting
+            st.subheader("Visualizing the AI Trend Line")
+            
+            # Add predictions to chart data
+            future_df = pd.DataFrame({
+                'Date': future_dates,
+                'Predicted_Close': future_prices
+            })
+            
+            # Combine historical and future for chart
+            st.line_chart(pd.concat([data.set_index('Date')['Close'], future_df.set_index('Date')['Predicted_Close']]))
+            
+        else:
+            st.error("Could not fetch data.")
