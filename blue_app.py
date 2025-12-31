@@ -12,23 +12,31 @@ st.set_page_config(page_title="FinBlue Sovereign AI", layout="wide", page_icon="
 st.sidebar.title("FinBlue Command")
 mode = st.sidebar.radio("Select Mode", [
     "Live Dashboard", 
-    "Backtest Engine (Time Machine)",
-    "AI Prophet (Future Prediction)"
+    "Backtest Engine (Risk Managed)",
+    "AI Prophet (Smart Entry)"
 ])
-ticker = st.sidebar.text_input("Enter Ticker (e.g., TRENT.NS, ZOMATO.NS)", "TRENT.NS")
+ticker = st.sidebar.text_input("Enter Ticker (e.g., TRENT.NS, ADANIENT.NS)", "TRENT.NS")
 
 # --- FUNCTION: FETCH DATA ---
 def get_data(ticker):
     try:
-        # Download 5 years for better AI training
         data = yf.download(ticker, period="5y", interval="1d", progress=False)
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
         
-        # Technical Indicators
+        # INDICATORS
         data['SMA_50'] = data['Close'].rolling(window=50).mean()
         data['SMA_200'] = data['Close'].rolling(window=200).mean()
+        
+        # RSI CALCULATION (The "Cheap vs Expensive" meter)
+        delta = data['Close'].diff()
+        gain = (delta.where(delta > 0, 0)).fillna(0)
+        loss = (-delta.where(delta < 0, 0)).fillna(0)
+        avg_gain = gain.rolling(window=14).mean()
+        avg_loss = loss.rolling(window=14).mean()
+        rs = avg_gain / avg_loss
+        data['RSI'] = 100 - (100 / (1 + rs))
         
         return data
     except:
@@ -37,127 +45,113 @@ def get_data(ticker):
 # --- MODE 1: LIVE DASHBOARD ---
 if mode == "Live Dashboard":
     st.title(f"🔵 FinBlue Live: {ticker}")
-    st.caption("⚠️ DATA DELAYED: Do not use for high-frequency trading.")
-    
     data = get_data(ticker)
     
     if data is None or data.empty:
-        st.error("⚠️ Ticker not found. Check spelling.")
+        st.error("⚠️ Ticker not found.")
     else:
         latest = data.iloc[-1]
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
         col1.metric("Current Price", f"₹{round(latest['Close'], 2)}")
         
-        trend = "BULLISH 🚀" if latest['SMA_50'] > latest['SMA_200'] else "BEARISH 🔻"
-        col2.metric("Market Trend", trend)
+        rsi = latest['RSI']
+        col2.metric("RSI (Price Heat)", f"{round(rsi, 1)}")
         
+        trend = "UP 🚀" if latest['SMA_50'] > latest['SMA_200'] else "DOWN 🔻"
+        col3.metric("Trend", trend)
         st.line_chart(data['Close'])
 
-# --- MODE 2: BACKTEST ENGINE ---
-elif mode == "Backtest Engine (Time Machine)":
+# --- MODE 2: BACKTEST ENGINE (WITH STOP LOSS) ---
+elif mode == "Backtest Engine (Risk Managed)":
     st.title("⏳ FinBlue Time Machine")
-    initial_capital = st.number_input("Initial Capital (₹)", value=100000)
+    col_a, col_b = st.columns(2)
+    initial_capital = col_a.number_input("Initial Capital (₹)", value=100000)
+    stop_loss_pct = col_b.slider("Stop Loss (%) - Sell if drops by:", 1, 20, 10)
     
     if st.button("Run Simulation"):
         data = get_data(ticker)
         if data is not None:
             data = data.dropna()
-            
-            # Logic: Golden Cross
-            data['Signal'] = 0
-            data.loc[data['SMA_50'] > data['SMA_200'], 'Signal'] = 1
-            data['Position'] = data['Signal'].diff()
-            
-            # Simple Backtest Loop
             balance = initial_capital
             shares = 0
+            position = 0
+            peak_price = 0
             portfolio_values = []
             
             for index, row in data.iterrows():
-                if row['Position'] == 1: # Buy
-                    shares = balance / row['Close']
-                    balance = 0
-                elif row['Position'] == -1 and shares > 0: # Sell
-                    balance = shares * row['Close']
-                    shares = 0
+                price = row['Close']
+                # STOP LOSS LOGIC
+                if position == 1:
+                    if price > peak_price: peak_price = price
+                    drop = (peak_price - price) / peak_price
+                    if drop > (stop_loss_pct/100):
+                        balance = shares * price
+                        shares = 0
+                        position = 0
                 
-                curr_val = (shares * row['Close']) if shares > 0 else balance
-                portfolio_values.append(curr_val)
+                # BUY LOGIC (Golden Cross)
+                if position == 0 and row['SMA_50'] > row['SMA_200']:
+                    shares = balance / price
+                    balance = 0
+                    position = 1
+                    peak_price = price
+                
+                # SELL LOGIC (Death Cross)
+                elif position == 1 and row['SMA_50'] < row['SMA_200']:
+                    balance = shares * price
+                    shares = 0
+                    position = 0
+                
+                val = shares * price if position == 1 else balance
+                portfolio_values.append(val)
             
-            # Results
-            final_val = portfolio_values[-1]
-            profit = final_val - initial_capital
-            roi = (profit/initial_capital)*100
-            
-            # Fees
-            mgmt_fee = initial_capital * 0.02
-            perf_fee = profit * 0.20 if profit > 0 else 0
-            total_fees = mgmt_fee + perf_fee
-            client_net = final_val - total_fees
-            
-            st.divider()
-            c1, c2, c3 = st.columns(3)
-            c1.metric("💰 Client Profit", f"₹{int(profit):,}", delta=f"{round(roi,2)}%")
-            c2.metric("🏦 FinBlue Earnings (You)", f"₹{int(total_fees):,}")
-            c3.metric("NET Client Value", f"₹{int(client_net):,}")
-            
+            profit = portfolio_values[-1] - initial_capital
+            st.metric("Final Value", f"₹{int(portfolio_values[-1]):,}", delta=f"{int(profit)}")
             st.line_chart(portfolio_values)
 
-# --- MODE 3: AI PROPHET (NEW) ---
-elif mode == "AI Prophet (Future Prediction)":
-    st.title(f"🔮 AI Prophet: Predicting {ticker}")
-    st.warning("⚠️ EXPERIMENTAL: This uses Linear Regression. It assumes trends continue forever. Real markets change.")
+# --- MODE 3: AI SNIPER (THE NEW LOGIC) ---
+elif mode == "AI Prophet (Smart Entry)":
+    st.title(f"🎯 AI Sniper: {ticker}")
+    st.write("Combining **Long Term AI Prediction** with **Short Term RSI**.")
     
-    if st.button("Generate Prediction"):
+    if st.button("Analyze Trade"):
         data = get_data(ticker)
         if data is not None:
-            data = data.dropna()
-            data = data.reset_index()
+            data = data.dropna().reset_index()
             
-            # Prepare Data for AI (Dates to Numbers)
+            # 1. ASK THE AI (Long Term)
             data['Date_Ordinal'] = data['Date'].map(pd.Timestamp.toordinal)
-            
-            X = data[['Date_Ordinal']] # Input (Time)
-            y = data['Close']          # Output (Price)
-            
-            # Train the Brain
+            X = data[['Date_Ordinal']]
+            y = data['Close']
             model = LinearRegression()
             model.fit(X, y)
             
-            # Predict Next 30 Days
-            last_date = data['Date'].iloc[-1]
-            future_dates = [last_date + datetime.timedelta(days=x) for x in range(1, 31)]
-            future_ordinals = [[d.toordinal()] for d in future_dates]
+            future_date = data['Date'].iloc[-1] + datetime.timedelta(days=30)
+            pred_price = model.predict([[future_date.toordinal()]])[0]
+            curr_price = data['Close'].iloc[-1]
+            ai_upside = ((pred_price - curr_price) / curr_price) * 100
             
-            future_prices = model.predict(future_ordinals)
+            # 2. CHECK THE RSI (Short Term)
+            rsi = data['RSI'].iloc[-1]
             
-            # Display Prediction
-            predicted_price = future_prices[-1]
-            current_price = data['Close'].iloc[-1]
-            change = ((predicted_price - current_price) / current_price) * 100
-            
+            # 3. THE VERDICT
             st.divider()
-            col1, col2 = st.columns(2)
-            col1.metric("Current Price", f"₹{round(current_price, 2)}")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Current Price", f"₹{round(curr_price, 2)}")
+            c2.metric("AI Prediction (30 Days)", f"₹{round(pred_price, 2)}", delta=f"{round(ai_upside, 1)}%")
+            c3.metric("RSI Level", f"{round(rsi, 1)}")
             
-            if change > 0:
-                col2.metric("Predicted Price (30 Days)", f"₹{round(predicted_price, 2)}", delta=f"+{round(change, 2)}%")
-                st.success("🚀 AI Prediction: BULLISH Trend Detected.")
+            st.subheader("🤖 The Sovereign Verdict:")
+            
+            if ai_upside > 5: # AI says UP
+                if rsi < 40:
+                    st.success("✅ **BUY NOW!** The trend is UP and the price is CHEAP (Dip). Perfect Entry.")
+                elif rsi > 70:
+                    st.warning("✋ **WAIT.** The trend is UP, but the price is too HIGH right now. Wait for it to drop below RSI 60.")
+                else:
+                    st.info("🔹 **HOLD/ACCUMULATE.** The price is fair. You can buy small amounts.")
             else:
-                col2.metric("Predicted Price (30 Days)", f"₹{round(predicted_price, 2)}", delta=f"{round(change, 2)}%")
-                st.error("📉 AI Prediction: BEARISH Trend Detected.")
+                st.error("❌ **DO NOT BUY.** The AI predicts the trend is Down or Flat.")
             
-            # Plotting
-            st.subheader("Visualizing the AI Trend Line")
-            
-            # Add predictions to chart data
-            future_df = pd.DataFrame({
-                'Date': future_dates,
-                'Predicted_Close': future_prices
-            })
-            
-            # Combine historical and future for chart
-            st.line_chart(pd.concat([data.set_index('Date')['Close'], future_df.set_index('Date')['Predicted_Close']]))
-            
-        else:
-            st.error("Could not fetch data.")
+            # Visuals
+            st.line_chart(data['Close'])
