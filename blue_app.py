@@ -19,7 +19,9 @@ mode = st.sidebar.radio("Select Mode", [
 # --- FUNCTION: FETCH & ANALYZE ---
 def analyze_stock(ticker):
     try:
-        data = yf.download(ticker, period="2y", interval="1d", progress=False)
+        # FIX: Changed back to 5y so the AI sees the Long Term Trend again
+        data = yf.download(ticker, period="5y", interval="1d", progress=False)
+        
         if data.empty: return None
         if isinstance(data.columns, pd.MultiIndex):
             data.columns = data.columns.get_level_values(0)
